@@ -1,0 +1,152 @@
+#import needed libraries
+
+import numpy as np
+import pandas as pd
+from sqlalchemy import create_engine
+import matplotlib.pyplot as plt
+from pathlib import Path
+
+
+# Project paths
+try:
+    ROOT = Path(__file__).parent
+except NameError:
+    ROOT = Path.cwd()
+
+DATA = ROOT / "data"
+DB_PATH = ROOT / "model_data.db"
+
+# taking a file path as input
+class DatasetHandler:
+    def __init__(self, file_path: Path) -> None:
+        self.file_path = file_path
+        self.data = self._load_csv()
+    #Loading csv file into Pandas DataFrame
+    #prevent program crashes while loading
+    def _load_csv(self) -> pd.DataFrame:
+        try:
+            return pd.read_csv(self.file_path)
+        except FileNotFoundError:
+            raise Exception(f"Can't find file: {self.file_path}")
+        except Exception as e:
+            raise Exception(f"Problem loading {self.file_path}: {e}")
+
+#connection to SQLite DB using SQLAlchemy
+class DB:
+    def __init__(self) -> None:
+        self.engine = create_engine(f'sqlite:///{DB_PATH}')
+    #store data into SQLite DB
+    def save_data(self) -> None:
+        # Load CSVs
+        train_data = DatasetHandler(DATA / "train.csv").data
+        ideal_data = DatasetHandler(DATA / "ideal.csv").data
+        test_data = DatasetHandler(DATA / "test.csv").data
+
+        # Save into DB with table names
+        #replace existing tables if already exist
+        train_data.to_sql("training_set", self.engine, if_exists='replace', index=False)
+        ideal_data.to_sql("ideal_set", self.engine, if_exists='replace', index=False)
+        test_data.to_sql("test_set", self.engine, if_exists='replace', index=False)
+
+    def load_data(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        # Get data from DB-retrieve stored datasets
+        train_data = pd.read_sql("training_set", self.engine)
+        ideal_data = pd.read_sql("ideal_set", self.engine)
+        test_data = pd.read_sql("test_set", self.engine)
+        #return the three datasets as a tuple
+        return train_data, ideal_data, test_data
+
+#Finding best matching ideal functions
+class Analyzer:
+    @staticmethod
+    def find_best_matches(train_data: pd.DataFrame, ideal_data: pd.DataFrame) -> dict:
+        match = {}
+        train_y = train_data.iloc[:, 1:].values
+
+        # Find best match for each training column
+        for i in range(train_y.shape[1]):
+            best_error = float('inf')
+            best_match = None
+
+            # Try each ideal function
+            for j in range(1, ideal_data.shape[1]):
+                error = np.sum((train_y[:, i] - ideal_data.iloc[:, j].values) ** 2)
+                if error < best_error:
+                    best_error = error
+                    best_match = j
+
+            match[i] = best_match
+
+        return match
+
+    #match test data to ideal functions
+    @staticmethod
+    def match_test_data(test_df: pd.DataFrame, ideal_df: pd.DataFrame,
+                        tolerance: float = np.sqrt(2)) -> list:
+        data_results = []
+        
+        # Check each test point
+        for _, point in test_df.iterrows():
+            x, y = point['x'], point['y']
+            best_match = None
+            min_dev = float('inf')
+
+            # Try each matched function
+            #compute the deviation between test y & ideal_y from ideal_df
+            for _, ideal_idx in matches.items():
+                ideal_y = ideal_df.iloc[:, ideal_idx].values
+                dev = abs(y - ideal_y[_])
+                max_dev = np.max(abs(ideal_y - y))
+
+                if dev <= tolerance * max_dev and dev < min_dev:
+                    min_dev = dev
+                    best_match = ideal_idx
+
+            data_results.append((x, y, best_match, min_dev))
+
+        return data_results
+
+    #plot data matching results
+    @staticmethod
+    def plot_results(train_data: pd.DataFrame, test_data: pd.DataFrame,
+                     ideal_data: pd.DataFrame) -> None:
+        # Plot training data
+        plt.scatter(train_data['x'], train_data.iloc[:, 1],
+                    label='Training', alpha=0.6)
+
+        # Plot matched function
+        plt.plot(train_data['x'], ideal_data.iloc[:, matches[0]],
+                 'r-', label='Best Match')
+
+        # Plot test points
+        plt.scatter(test_data['x'], test_data['y'],
+                    c='g', label='Test', marker='x')
+
+        #set axis labels for x and y
+        plt.xlabel("x")
+        plt.ylabel("y")
+        #to differentiate between the datasets
+        plt.legend()
+
+        plt.title("Data Matching Results")
+        #enables grid lines for better readability
+        plt.grid(True)
+        #display the plot
+        plt.show()
+
+#main execution flow
+if __name__ == "__main__":
+    # Setup DB and load data
+    db = DB()
+    db.save_data()
+    train, ideal, test = db.load_data()
+
+    # Find matches
+    analyzer = Analyzer()
+    matches = analyzer.find_best_matches(train, ideal)
+    results = analyzer.match_test_data(test, ideal)
+
+    print("Test results:", results)
+    print("Function matches:", matches)
+    #plot
+    analyzer.plot_results(train, test, ideal)
